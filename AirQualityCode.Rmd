@@ -1,0 +1,390 @@
+---
+title: "Create an Air Pollution Warning System"
+author: "Yang Yu, Jing Wang, Chu Chu"
+date: "11/10/2017"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/',
+                      echo=TRUE,eval=FALSE, warning=FALSE, message=FALSE)
+```
+
+# Prediction Model
+
+
+```{r, eval=FALSE, message=FALSE, warning=FALSE}
+library(readr)
+PMraw <- read_csv("GuangzhouPM20100101_20151231.csv") # raw data
+PMdata <- PMraw[-52584,]
+PMdata$`PM_City Station` <- as.numeric(unlist(PMdata$`PM_City Station`))
+PMdata$`PM_5th Middle School` <- as.numeric(unlist(PMdata$`PM_5th Middle School`))
+PMdata$`PM_US Post` <- as.numeric(unlist(PMdata$`PM_US Post`))
+PMdata$`PM_5th Middle School`[26557]<-94 
+PMdata$`PM_5th Middle School`[26891]<-37 
+Mean <- rowMeans(PMdata[, 7:8], na.rm = TRUE) # average PM2.5 columns
+Mean<-round(Mean,2)
+PMdata<-cbind(PMdata,Mean)
+# remove continuous missing blocks
+PMdata <-PMdata[-(1:16550),]
+PMdata <- PMdata[-(1:10),]
+PMdata <- PMdata[-(1:24),]
+PMdata <-PMdata[,-1]
+PMdata <-PMdata[,-(6:8)]
+```
+
+#### impute data 
+```{r, message=FALSE, warning=FALSE}
+require(DMwR)
+PMdata$DEWP[18053:18056]<-NA
+PMdata$HUMI[18053:18056]<-NA
+Knndata<-knnImputation(PMdata[,-10]) # imput missing values using KNN method
+Knndata<-cbind(Knndata,PMdata$cbwd)
+Mean_lag = c(embed(Knndata$Mean, 25)[,1],NA,NA,NA,NA,NA,NA,NA,NA,
+             NA,NA,NA,NA,NA,NA,NA,NA,NA,
+             NA,NA,NA,NA,NA,NA,NA)
+imputed_data <-cbind(Knndata, Mean_lag) # cleaned data for analysis
+```
+
+#### factor the data
+```{r}
+# coerce categorical variables to factor variables
+imputed_data$year<-as.factor(imputed_data$year)
+imputed_data$season<-as.factor(imputed_data$season)
+imputed_data$month<-as.factor(imputed_data$month)
+imputed_data$`PMdata$cbwd`<- as.factor(imputed_data$`PMdata$cbwd`)
+imputed_data$day<-as.factor(imputed_data$day)
+colnames(imputed_data)[14]<-"cbwd"
+```
+
+```{r}
+# check descriptive statistics
+# sapply(imputed_data, summary)
+# sapply(imputed_data, table)
+# table(imputed_data$cbwd)
+```
+
+#### add group
+```{r}
+# every 24 observations/hour is a day
+group<-vector()
+for(i in 1:1500){
+  c<-(1:24)
+  k<-24*(i-1)
+  group[c+k]<-rep(i, 24)
+}
+group<-group[-36000]
+groupdata<-cbind(imputed_data, group)
+groupdata$obn <- c(1:35999)
+```
+
+#### split data
+```{r}
+set.seed(123)
+index <- sample(unique(groupdata$group), size = trunc(0.7 * 1500))
+train_data <- groupdata[groupdata$group %in% index, ] # 70% training
+test_data <- groupdata[-train_data$obn, ] # 30% teststing
+train_data <- train_data[,-17]
+test_data <- test_data[,-17]
+```
+
+
+#### linear regression
+```{r}
+lm_data <- test_data
+lm_model <- lm(Mean_lag ~ ., data = train_data[,-16])
+step <- step(lm_model, direction = "both")
+lm_model <-lm(Mean_lag ~ year + month + day + hour + DEWP + HUMI + PRES + TEMP + Iws + Iprec + Mean + cbwd,  data = train_data[, -16])
+plot(lm_model)
+```
+
+```{r}
+lm_data$lm_pred <- predict(lm_model, newdata = test_data[,-16])
+lm_original_max <- tapply(lm_data$Mean_lag, lm_data$group, max)
+lm_pred_max <- tapply(lm_data$lm_pred, lm_data$group, max)
+lm_original_max[lm_original_max <= 75]<-1
+lm_original_max[lm_original_max > 75 & lm_original_max <= 150]<-2
+lm_original_max[lm_original_max > 150]<-3
+lm_original_max<-as.factor(lm_original_max)
+lm_pred_max[lm_pred_max <= 75]<-1
+lm_pred_max[lm_pred_max > 75 & lm_pred_max <= 150]<-2
+lm_pred_max[lm_pred_max > 150]<-3
+lm_pred_max<-as.factor(lm_pred_max)
+lm_table <- table(lm_original_max, lm_pred_max)# prediction matrix
+(lm_table[1,1]+lm_table[2,2]+lm_table[3,3])/sum(lm_table) 
+```
+
+#### tree
+```{r}
+library(tree)
+tree_data <- test_data
+tree_model <- tree(Mean_lag ~ ., data = train_data[,-16])
+tree_data$tree_pred <- predict(tree_model, newdata = test_data[,-16])
+tree_original_max <- tapply(tree_data$Mean_lag, tree_data$group, max)
+tree_pred_max <- tapply(tree_data$tree_pred, tree_data$group, max)
+tree_original_max[tree_original_max <= 75]<-1
+tree_original_max[tree_original_max > 75 & tree_original_max <= 150]<-2
+tree_original_max[tree_original_max > 150]<-3
+tree_original_max<-as.factor(tree_original_max)
+tree_pred_max[tree_pred_max <= 75]<-1
+tree_pred_max[tree_pred_max > 75 & tree_pred_max <= 150]<-2
+tree_pred_max[tree_pred_max > 150]<-3
+tree_pred_max<-as.factor(tree_pred_max)
+tree_table <- table(tree_original_max, tree_pred_max)# prediction matrix
+(tree_table[1,1]+tree_table[2,2]+tree_table[3,3])/sum(tree_table)
+```
+
+#### randomforest
+```{r}
+rf_data <- test_data
+library(randomForest)
+rf_model<-randomForest(Mean_lag~., data=train_data[-(25176:25199),-16],
+                 importance=T, proximity=F,
+                  ntree=100)
+rf_data$rf_pred <- predict(rf_model, newdata = test_data[,-16])
+rf_original_max <- tapply(rf_data$Mean_lag, rf_data$group, max)
+rf_pred_max <- tapply(rf_data$rf_pred, rf_data$group, max)
+rf_original_max[rf_original_max <= 75]<-1
+rf_original_max[rf_original_max > 75 & rf_original_max <= 150]<-2
+rf_original_max[rf_original_max > 150]<-3
+rf_original_max<-as.factor(rf_original_max)
+rf_pred_max[rf_pred_max <= 75]<-1
+rf_pred_max[rf_pred_max > 75 & rf_pred_max <= 150]<-2
+rf_pred_max[rf_pred_max > 150]<-3
+rf_pred_max<-as.factor(rf_pred_max)
+rf_table <- table(rf_original_max, rf_pred_max)
+(rf_table[1,1]+rf_table[2,2])/sum(rf_table)
+plot(rf_model)
+varImpPlot(rf_model) # variable importance plot
+```
+
+#### change cutoff of linear regression
+```{r}
+lm_data$lm_pred <- predict(lm_model, newdata = test_data[,-16])
+lm_original_max <- tapply(lm_data$Mean_lag, lm_data$group, max)
+lm_pred_max <- tapply(lm_data$lm_pred, lm_data$group, max)
+lm_original_max[lm_original_max <= 75]<-1
+lm_original_max[lm_original_max > 75 & lm_original_max <= 150]<-2
+lm_original_max[lm_original_max > 150]<-3
+lm_original_max<-as.factor(lm_original_max)
+lm_pred_max[lm_pred_max <= 60]<-1
+lm_pred_max[lm_pred_max > 60 & lm_pred_max <= 130]<-2
+lm_pred_max[lm_pred_max > 130]<-3
+lm_pred_max<-as.factor(lm_pred_max)# prediction matrix
+lm_table <- table(lm_original_max, lm_pred_max) # higest prediction accuracy 
+```
+
+#### max pm value in a day data
+```{r}
+which_max<-tapply(as.numeric(groupdata$Mean_lag), groupdata$group, which.max)
+max_in_day_data<-data.frame()
+for(i in 1:1500){
+  group_data <- groupdata[which(groupdata$group==i), ]
+  max_in_day_data<- rbind(max_in_day_data, group_data[which_max[[i]],])
+}
+max_in_day_data<-max_in_day_data[,-16]
+get_out_data <- max_in_day_data[,1:4]
+
+max_data<-tapply(groupdata$Mean_lag, groupdata$group, max)
+max_data<-max_data[-1500]
+max_data[max_data <= 75]<-1
+max_data[max_data > 75 & max_data <= 150]<-2
+max_data[max_data > 150]<-3
+get_out_data$max <- max_data
+max_2012 <- max_data[which(get_out_data$year==2012)]
+max_2013 <- max_data[which(get_out_data$year==2013)]
+max_2014 <- max_data[which(get_out_data$year==2014)]
+max_2015 <- max_data[which(get_out_data$year==2015)]
+table(max_2012)
+table(max_2013)
+table(max_2014)
+table(max_2015)
+```
+
+
+# Data Visualization
+
+```{r, include=FALSE}
+# wrap text for output and surpress all codes
+library(knitr)
+opts_chunk$set(tidy.opts = list(width.cutoff = 60), tidy = TRUE,
+               echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+PMraw = read.csv("PM25data.csv")
+train = read.csv("traindata.csv")
+test = read.csv("testdata.csv")
+PMdata = PMraw[937:dim(PMraw)[1], ]
+data1 = PMdata
+colnames(test)
+colnames(PMraw)
+```
+
+#### monthly avg PM2.5 
+```{r, fig.height=3, fig.width=12}
+library(data.table)
+
+PMdata = PMraw[937:dim(PMraw)[1], ]
+data1 = data.table(PMdata)
+length(which(PMdata$year == 2012))
+length(which(PMdata$year == 2013))
+pm_yr_mon_ms = data1[ ,list(avg=mean(Mean_lag, na.rm = T)), by=c("year", "month")]
+
+pm_2012_mon_ms = pm_yr_mon_ms$avg[pm_yr_mon_ms$year == 2012] 
+pm_2013_mon_ms = pm_yr_mon_ms$avg[pm_yr_mon_ms$year == 2013]
+pm_2014_mon_ms = pm_yr_mon_ms$avg[pm_yr_mon_ms$year == 2014]
+pm_2015_mon_ms = pm_yr_mon_ms$avg[pm_yr_mon_ms$year == 2015]
+
+
+par(mfrow = c(1,4))
+plot(pm_2012_mon_ms, main = "2012", xlab = "Month", ylab = "Monthly Average PM2.5", col = "dodgerblue", type = "o", cex = 1, ylim = c(0, 200))
+abline(h = 35, col = "tomato", lty = 2, lwd = 1)
+abline(h = 75, col = "tomato", lty = 2, lwd = 1)
+
+plot(pm_2013_mon_ms, main = "2013", xlab = "Month", ylab = "Monthly Average PM2.5", col = "dodgerblue", type = "o", cex = 1, ylim = c(0, 200))
+abline(h = 35, col = "tomato", lty = 2, lwd = 1)
+abline(h = 75, col = "tomato", lty = 2, lwd = 1)
+
+plot(pm_2014_mon_ms, main = "2014", xlab = "Month", ylab = "Monthly Average PM2.5", col = "dodgerblue", type = "o", cex = 1, ylim = c(0, 200))
+abline(h = 35, col = "tomato", lty = 2, lwd = 1)
+abline(h = 75, col = "tomato", lty = 2, lwd = 1)
+
+plot(pm_2015_mon_ms, main = "2015", xlab = "Month", ylab = "Monthly Average PM2.5", col = "dodgerblue", type = "o", cex = 1, ylim = c(0, 200))
+abline(h = 35, col = "tomato", lty = 2, lwd = 1)
+abline(h = 75, col = "tomato", lty = 2, lwd = 1)
+# mtext("My 'Title' in a strange place", side = 3, line = -1, cex = 1.5, outer = TRUE)
+```
+
+
+
+#### daily avg PM2.5 
+
+```{r}
+# take mean/max/min every 24 observations to get daily average/max/min
+# PMdata starts on Wednesday
+group<-vector()
+for(i in 1:1500){
+  c<-(1:24)
+  k<-24*(i-1)
+  group[c+k]<-rep(i, 24)
+}
+group<-group[-35000]
+
+PMraw<-cbind(PMraw, group)
+
+PMdata = PMraw[937:dim(PMraw)[1], ]
+# length(PMdata$group[which(PMdata$year == "2012")])/24
+# length(PMdata$group[which(PMdata$year == "2013")])/24
+# length(PMdata$group[which(PMdata$year == "2014")])/24
+# length(PMdata$group[which(PMdata$year == "2015")])/24
+
+
+mean_day<-tapply(PMdata$Mean_lag, PMdata$group, mean)
+min_day <-tapply(PMdata$Mean_lag, PMdata$group, min)
+max_day <-tapply(PMdata$Mean_lag, PMdata$group, max)
+```
+
+
+```{r, fig.height=3, fig.width=12}
+par(mfrow = c(1,4))
+
+# plot(max_day[1:39], col = "dodgerblue", cex = 0.5, xlab = "Day", main = "Daily Maximum PM2.5, 2011")
+# abline(h = 75, col = "tomato", lty = 2, lwd = 2)
+
+plot(mean_day[1:366], col = "dodgerblue", cex = 0.6, xlab = "Day", ylim = c(0, 200), yaxt = "n", ylab = "Daily Average PM2.5", main = "2012")
+abline(h = 35, col = "tomato", lty = 2, lwd = 1)
+abline(h = 75, col = "tomato", lty = 2, lwd = 1)
+abline(h = 150, col = "tomato", lty = 2, lwd = 1)
+
+plot(mean_day[367:731], col = "dodgerblue", cex = 0.6, xlab = "Day", ylim = c(0, 200),ylab = "Daily Average PM2.5", main = "2013")
+abline(h = 35, col = "tomato", lty = 2, lwd = 1)
+abline(h = 75, col = "tomato", lty = 2, lwd = 1)
+abline(h = 150, col = "tomato", lty = 2, lwd = 1)
+
+plot(mean_day[732:1096], col = "dodgerblue", cex = 0.6, xlab = "Day", ylim = c(0, 200), ylab = "Daily Average PM2.5", main = "2014")
+abline(h = 35, col = "tomato", lty = 2, lwd = 1)
+abline(h = 75, col = "tomato", lty = 2, lwd = 1)
+abline(h = 150, col = "tomato", lty = 2, lwd = 1)
+
+plot(mean_day[1096:1461], col = "dodgerblue", cex = 0.6, xlab = "Day", ylim = c(0, 200), ylab = "Daily Average PM2.5", main = "2015")
+abline(h = 35, col = "tomato", lty = 2, lwd = 1)
+abline(h = 75, col = "tomato", lty = 2, lwd = 1)
+abline(h = 150, col = "tomato", lty = 2, lwd = 1)
+# mtext("Guangzhou Daily Average PM2.5", side = 3, line = -18, outer = TRUE)
+```
+
+
+#### weekly avg PM2.5 
+
+```{r}
+NameDummy = c(rep("Su", 24), rep("Mo", 24), rep("Tu", 24), rep("We", 24), rep("Th", 24), rep("Fr", 24), rep("Sa", 24)) 
+
+weekday = rep(c("Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"), round(dim(mean_day)[1]/7))
+# length(weekday)
+# length(mean_day)
+# PMdata[1:366*24, ]
+
+weekday = weekday[1:dim(mean_day)[1]]
+mean_day_X = data.frame(mean_day, weekday)
+year = c(rep(2012, 366), rep(2013, 365), rep(2014, 365), rep(2015, 365))
+mean_day_X$year = year
+
+mean_day_X = data.table(mean_day_X)
+mean_day_avg = mean_day_X[, list(avg=mean(mean_day, na.rm = T)), by=c("year","weekday")]
+
+mean_day_order = mean_day_avg[order(mean_day_avg$weekday), ]
+mean_day_order$weekdaynum = c(rep(5, 4), rep(1, 4), rep(6, 4), rep(7, 4), rep(4, 4), rep(2, 4), rep(3, 4))
+
+mean_day_order = mean_day_order[order(mean_day_order$weekdaynum), ]
+
+mean_day_order_2012 = mean_day_order[mean_day_order$year == 2012]
+mean_day_order_2013 = mean_day_order[mean_day_order$year == 2013]
+mean_day_order_2014 = mean_day_order[mean_day_order$year == 2014]
+mean_day_order_2015 = mean_day_order[mean_day_order$year == 2015]
+```
+
+```{r}
+# , main = "Guangzhou PM2.5 Trend, Days in a Week, 2012-2015"
+plot(mean_day_order_2012$avg ~ mean_day_order_2012$weekdaynum, xaxt = "n", type = "b", ylim = c(30, 80), col = "darkorange", xlab = "Day", ylab = "Daily Average PM2.5")
+axis(1, at=1:7, labels=c("Mo", "Tu", "We", "Tr", "Fr", "Sa", "Su"))
+lines(mean_day_order_2013$avg ~ mean_day_order_2013$weekdaynum, type = "b", ylim = c(30, 80), yaxt = "n", col = "forestgreen")
+lines(mean_day_order_2014$avg ~ mean_day_order_2014$weekdaynum, type = "b", ylim = c(30, 80), yaxt = "n", col = "dodgerblue")
+lines(mean_day_order_2015$avg ~ mean_day_order_2015$weekdaynum, type = "b", ylim = c(30, 80), yaxt = "n", col = "purple")
+abline(h = 35, col = "tomato", lty = 2, lwd = 1)
+abline(h = 75, col = "tomato", lty = 2, lwd = 1)
+
+legend(4, 80,  c("2012", "2013", "2014", "2015"),  
+       col=c("darkorange", "forestgreen", "dodgerblue", "purple"), lty = 1, cex = 0.8)
+
+```
+
+#### hourly avg PM2.5
+```{r}
+data1 = data.table(PMdata)
+
+pm_yr_hr_ms = data1[, list(avg=mean(Mean_lag, na.rm = T)), by=c("year", "hour")]
+pm_2012_hr_ms = pm_yr_hr_ms$avg[pm_yr_hr_ms$year == 2012]
+pm_2013_hr_ms = pm_yr_hr_ms$avg[pm_yr_hr_ms$year == 2013]
+pm_2014_hr_ms = pm_yr_hr_ms$avg[pm_yr_hr_ms$year == 2014]
+pm_2015_hr_ms = pm_yr_hr_ms$avg[pm_yr_hr_ms$year == 2015]
+
+# Guangzhou Hourly Average PM2.5
+plot(pm_2012_hr_ms, xlab = "Hour", ylab = "Hourly Average PM2.5", col = "darkorange", type = "o", cex = 0.8, ylim = c(30, 80))
+lines(pm_2013_hr_ms, xlab = "Hour", ylab = "PM2.5", col = "forestgreen", type = "o", cex = 0.8, ylim = c(0, 100))
+lines(pm_2014_hr_ms, xlab = "Hour", ylab = "PM2.5", col = "dodgerblue", type = "o", cex = 0.8, ylim = c(0, 100))
+lines(pm_2015_hr_ms, xlab = "Hour", ylab = "PM2.5", col = "purple", type = "o", cex = 0.8, ylim = c(0, 100))
+abline(h = 35, col = "tomato", lty = 2, lwd = 1)
+abline(h = 75, col = "tomato", lty = 2, lwd = 1)
+legend(12, 80,  c("2012", "2013", "2014", "2015"),  
+       col=c("darkorange", "forestgreen", "dodgerblue", "purple"), lty = 1, cex = 0.8)
+
+```
+
+```{r}
+library(knitr)
+purl("AirQualityCode.Rmd", output = "AirQualityCode.R", documentation = 1)
+```
+
