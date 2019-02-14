@@ -1,6 +1,5 @@
 # air-pollution-alarm
-Statistical consulting project
-Script: R
+Statistical consulting project (Script: R)
 
 ## Creating an Air Pollution Warning System
 #### Contributors: Yang Yu, Jing Wang, Chu Chu
